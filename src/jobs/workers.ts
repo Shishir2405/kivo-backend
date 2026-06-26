@@ -4,7 +4,7 @@ import { config } from '@/config';
 import { QueueName } from '@/constants';
 import { createLogger } from '@/utils/logger';
 
-import { bullConnection } from './connection';
+import { getBullConnection } from './connection';
 import {
   analyticsProcessor,
   maintenanceProcessor,
@@ -21,7 +21,7 @@ function makeWorker(
   processor: (job: import('bullmq').Job) => Promise<void>,
 ): Worker {
   const worker = new Worker(name, processor, {
-    connection: bullConnection,
+    connection: getBullConnection(),
     prefix: config.bullmq.prefix,
     concurrency: config.bullmq.concurrency,
   });

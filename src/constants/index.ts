@@ -26,9 +26,14 @@ export const JobName = {
   SWEEP_DUE_REVISIONS: 'sweep_due_revisions',
   // notification queue
   SEND_PUSH: 'send_push',
+  HABIT_REMINDER: 'habit_reminder',
+  REFLECTION_REMINDER: 'reflection_reminder',
+  DAILY_GOAL_REMINDER: 'daily_goal_reminder',
+  INACTIVITY_REMINDER: 'inactivity_reminder',
   // analytics queue
   GENERATE_WEEKLY_REPORT: 'generate_weekly_report',
   RECALCULATE_STREAKS: 'recalculate_streaks',
+  MONTHLY_SUMMARY: 'monthly_summary',
   // maintenance queue
   CLEANUP_EXPIRED_TOKENS: 'cleanup_expired_tokens',
 } as const;

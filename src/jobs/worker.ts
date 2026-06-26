@@ -2,7 +2,7 @@ import { initFirebase } from '@/firebase/admin';
 import { closeRedis } from '@/config/redis';
 import { createLogger } from '@/utils/logger';
 
-import { bullConnection } from './connection';
+import { closeBullConnection } from './connection';
 import { closeQueues } from './queues';
 import { registerSchedules } from './scheduler';
 import { closeWorkers, startWorkers } from './workers';
@@ -18,7 +18,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     await closeWorkers();
     await closeQueues();
-    await bullConnection.quit().catch(() => bullConnection.disconnect());
+    await closeBullConnection();
     await closeRedis();
     log.info('Worker shutdown complete');
     process.exit(0);

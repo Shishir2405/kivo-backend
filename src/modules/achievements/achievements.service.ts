@@ -1,3 +1,5 @@
+import { NotificationType } from '@/constants';
+import { notificationService } from '@/notifications';
 import type { CreateInput } from '@/types';
 import { nowIso } from '@/utils/dates';
 import { createLogger } from '@/utils/logger';
@@ -110,6 +112,18 @@ export class AchievementsService {
     const docId = `${userId}__${key}`;
     const created = await achievementsRepository.create(payload, docId);
     log.info({ userId, key, xpAwarded: created.xpAwarded }, 'Achievement unlocked');
+
+    // Only newly-awarded achievements reach here (existing ones returned above),
+    // so this fires exactly once per unlock. Best-effort — never fail the award.
+    try {
+      await notificationService.notify(userId, NotificationType.ACHIEVEMENT_UNLOCKED, {
+        achievementId: created.key,
+        achievementName: created.title,
+      });
+    } catch (err) {
+      log.warn({ err, userId, key }, 'Failed to send achievement-unlocked notification');
+    }
+
     return created;
   }
 }

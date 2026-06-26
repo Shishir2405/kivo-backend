@@ -7,6 +7,19 @@ import { config } from './index';
 const log = createLogger('redis');
 
 /**
+ * Whether Redis is meaningfully configured. A bare default host (`127.0.0.1`) with
+ * no password is treated as "not configured" so serverless deploys don't try to dial
+ * a non-existent local Redis. Redis powers BullMQ + the distributed rate limiter;
+ * when absent the rate limiter falls back to in-memory and job enqueues no-op.
+ */
+export function isRedisConfigured(): boolean {
+  if (config.redis.url) return true;
+  const usingDefaultHost =
+    config.redis.host === '127.0.0.1' || config.redis.host === 'localhost';
+  return !usingDefaultHost || Boolean(config.redis.password);
+}
+
+/**
  * Build ioredis connection options from validated config.
  *
  * `maxRetriesPerRequest: null` and `enableReadyCheck: false` are required by BullMQ,
@@ -16,7 +29,11 @@ export function buildRedisOptions(overrides: Partial<RedisOptions> = {}): RedisO
   const base: RedisOptions = {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
-    lazyConnect: false,
+    // Lazy connect: don't dial Redis at construction time. This is essential for
+    // serverless — importing a module that builds a client (e.g. BullMQ queues)
+    // must not trigger a TCP connection at import. The connection is established
+    // on the first command (ping/add/etc.).
+    lazyConnect: true,
     retryStrategy(times) {
       const delay = Math.min(times * 200, 5_000);
       return delay;
@@ -74,6 +91,7 @@ export function getRedis(): Redis {
 }
 
 export async function pingRedis(): Promise<boolean> {
+  if (!isRedisConfigured()) return false;
   try {
     const res = await getRedis().ping();
     return res === 'PONG';

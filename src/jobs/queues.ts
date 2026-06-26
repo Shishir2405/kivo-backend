@@ -1,9 +1,11 @@
 import { Queue, type JobsOptions } from 'bullmq';
 
 import { config } from '@/config';
+import { isRedisConfigured } from '@/config/redis';
 import { JobName, QueueName } from '@/constants';
+import { createLogger } from '@/utils/logger';
 
-import { bullConnection } from './connection';
+import { getBullConnection } from './connection';
 import type {
   CleanupExpiredTokensPayload,
   FireRevisionReminderPayload,
@@ -14,6 +16,8 @@ import type {
   SweepDueRevisionsPayload,
 } from './job.types';
 
+const log = createLogger('queues');
+
 const defaultJobOptions: JobsOptions = {
   attempts: 3,
   backoff: { type: 'exponential', delay: 5_000 },
@@ -23,24 +27,45 @@ const defaultJobOptions: JobsOptions = {
 
 function makeQueue(name: QueueName): Queue {
   return new Queue(name, {
-    connection: bullConnection,
+    connection: getBullConnection(),
     prefix: config.bullmq.prefix,
     defaultJobOptions,
   });
 }
 
-/** One queue per logical workstream. Producers (API) and consumers (worker) share names. */
-export const revisionQueue = makeQueue(QueueName.REVISION);
-export const notificationQueue = makeQueue(QueueName.NOTIFICATION);
-export const analyticsQueue = makeQueue(QueueName.ANALYTICS);
-export const maintenanceQueue = makeQueue(QueueName.MAINTENANCE);
+/**
+ * Queues are created LAZILY (and memoised) on first access, never at import. This
+ * keeps the API process — and serverless functions in particular — from touching
+ * BullMQ/Redis just because a service module imports an `enqueue*` helper.
+ */
+const queueCache = new Map<QueueName, Queue>();
 
-export const queues: Record<QueueName, Queue> = {
-  [QueueName.REVISION]: revisionQueue,
-  [QueueName.NOTIFICATION]: notificationQueue,
-  [QueueName.ANALYTICS]: analyticsQueue,
-  [QueueName.MAINTENANCE]: maintenanceQueue,
-};
+function getQueue(name: QueueName): Queue {
+  let queue = queueCache.get(name);
+  if (!queue) {
+    queue = makeQueue(name);
+    queueCache.set(name, queue);
+  }
+  return queue;
+}
+
+/** One queue per logical workstream. Producers (API) and consumers (worker) share names. */
+export const getRevisionQueue = (): Queue => getQueue(QueueName.REVISION);
+export const getNotificationQueue = (): Queue => getQueue(QueueName.NOTIFICATION);
+export const getAnalyticsQueue = (): Queue => getQueue(QueueName.ANALYTICS);
+export const getMaintenanceQueue = (): Queue => getQueue(QueueName.MAINTENANCE);
+
+/**
+ * Guard every enqueue: when Redis isn't configured (e.g. Vercel serverless with no
+ * REDIS_URL) we cannot reach BullMQ, so the helper no-ops and warns instead of
+ * throwing. Background work is simply skipped — the request path still succeeds.
+ * Returns `true` when the job was enqueued, `false` when skipped.
+ */
+function redisAvailable(action: string): boolean {
+  if (isRedisConfigured()) return true;
+  log.warn({ action }, 'Redis not configured — skipping background job enqueue');
+  return false;
+}
 
 // ── Typed enqueue helpers ──────────────────────────────────────────────────
 // Services import these (never the workers) so there are no producer→consumer cycles.
@@ -48,7 +73,8 @@ export const queues: Record<QueueName, Queue> = {
 export async function enqueueScheduleRevisions(
   payload: ScheduleRevisionsPayload,
 ): Promise<void> {
-  await revisionQueue.add(JobName.SCHEDULE_REVISIONS, payload);
+  if (!redisAvailable('scheduleRevisions')) return;
+  await getRevisionQueue().add(JobName.SCHEDULE_REVISIONS, payload);
 }
 
 /**
@@ -60,37 +86,44 @@ export async function enqueueRevisionReminder(
   revisionId: string,
   delayMs: number,
 ): Promise<void> {
+  if (!redisAvailable('revisionReminder')) return;
   const payload: FireRevisionReminderPayload = { revisionId };
-  await revisionQueue.add(JobName.FIRE_REVISION_REMINDER, payload, {
+  await getRevisionQueue().add(JobName.FIRE_REVISION_REMINDER, payload, {
     delay: Math.max(0, Math.floor(delayMs)),
     jobId: `revision-reminder:${revisionId}`,
   });
 }
 
 export async function enqueueSweepDueRevisions(): Promise<void> {
+  if (!redisAvailable('sweepDueRevisions')) return;
   const payload: SweepDueRevisionsPayload = {};
-  await revisionQueue.add(JobName.SWEEP_DUE_REVISIONS, payload);
+  await getRevisionQueue().add(JobName.SWEEP_DUE_REVISIONS, payload);
 }
 
 export async function enqueueSendPush(payload: SendPushPayload): Promise<void> {
-  await notificationQueue.add(JobName.SEND_PUSH, payload);
+  if (!redisAvailable('sendPush')) return;
+  await getNotificationQueue().add(JobName.SEND_PUSH, payload);
 }
 
 export async function enqueueWeeklyReport(userId?: string): Promise<void> {
+  if (!redisAvailable('weeklyReport')) return;
   const payload: GenerateWeeklyReportPayload = userId ? { userId } : {};
-  await analyticsQueue.add(JobName.GENERATE_WEEKLY_REPORT, payload);
+  await getAnalyticsQueue().add(JobName.GENERATE_WEEKLY_REPORT, payload);
 }
 
 export async function enqueueRecalculateStreaks(userId?: string): Promise<void> {
+  if (!redisAvailable('recalculateStreaks')) return;
   const payload: RecalculateStreaksPayload = userId ? { userId } : {};
-  await analyticsQueue.add(JobName.RECALCULATE_STREAKS, payload);
+  await getAnalyticsQueue().add(JobName.RECALCULATE_STREAKS, payload);
 }
 
 export async function enqueueCleanupExpiredTokens(): Promise<void> {
+  if (!redisAvailable('cleanupExpiredTokens')) return;
   const payload: CleanupExpiredTokensPayload = {};
-  await maintenanceQueue.add(JobName.CLEANUP_EXPIRED_TOKENS, payload);
+  await getMaintenanceQueue().add(JobName.CLEANUP_EXPIRED_TOKENS, payload);
 }
 
 export async function closeQueues(): Promise<void> {
-  await Promise.all(Object.values(queues).map((q) => q.close()));
+  await Promise.all([...queueCache.values()].map((q) => q.close()));
+  queueCache.clear();
 }

@@ -1,6 +1,9 @@
+import { NotificationType } from '@/constants';
+import { notificationService } from '@/notifications';
 import type { CreateInput, PaginatedResult } from '@/types';
 import { ApiError } from '@/utils/ApiError';
 import { dayjs, startOfIsoWeek } from '@/utils/dates';
+import { createLogger } from '@/utils/logger';
 import type { QueryFilter } from '@/repositories/base.repository';
 
 import { studySessionsRepository } from './study-sessions.repository';
@@ -10,6 +13,8 @@ import type {
   ListStudySessionsQuery,
   UpdateStudySessionInput,
 } from './study-sessions.validator';
+
+const log = createLogger('study-sessions-service');
 
 export class StudySessionsService {
   async create(userId: string, input: CreateStudySessionInput): Promise<StudySession> {
@@ -24,7 +29,21 @@ export class StudySessionsService {
     if (input.topicId !== undefined) payload.topicId = input.topicId;
     if (input.topicName !== undefined) payload.topicName = input.topicName;
     if (input.notes !== undefined) payload.notes = input.notes;
-    return studySessionsRepository.create(payload);
+    const session = await studySessionsRepository.create(payload);
+
+    // A recorded session is a completed focus session — nudge the user.
+    // Notification delivery is best-effort: never fail the write on a push error.
+    try {
+      await notificationService.notify(userId, NotificationType.STUDY_TIMER_COMPLETE, {
+        sessionId: session.id,
+        durationMinutes: session.durationMinutes,
+        ...(session.topicName !== undefined ? { topicTitle: session.topicName } : {}),
+      });
+    } catch (err) {
+      log.warn({ err, userId, sessionId: session.id }, 'Failed to send study-timer notification');
+    }
+
+    return session;
   }
 
   async list(

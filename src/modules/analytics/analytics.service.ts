@@ -2,6 +2,7 @@ import type { DocumentData, Query } from 'firebase-admin/firestore';
 
 import {
   Collections,
+  NotificationType,
   ProblemStatus,
   RevisionStatus,
   TaskStatus,
@@ -10,8 +11,10 @@ import { collection } from '@/firebase/firestore';
 import type { DsaProblem } from '@/modules/dsa/dsa.types';
 import type { Revision } from '@/modules/revisions/revisions.types';
 import type { Task } from '@/modules/tasks/tasks.types';
+import { notificationService } from '@/notifications';
 import type { CreateInput } from '@/types';
 import { addDays, dayKey, dayjs, nowIso, startOfIsoWeek } from '@/utils/dates';
+import { createLogger } from '@/utils/logger';
 
 import type {
   ContributionBreakdown,
@@ -44,6 +47,8 @@ function emptyBreakdown(): ContributionBreakdown {
     habitCompletions: 0,
   };
 }
+
+const analyticsLog = createLogger('analytics-service');
 
 /** Best-effort extraction of a day key from an ISO timestamp; null if absent/invalid. */
 function dayKeyOf(iso: string | undefined): string | null {
@@ -359,8 +364,18 @@ export class AnalyticsService {
     const userIds = userId ? [userId] : await this.allUserIds();
     let count = 0;
     for (const uid of userIds) {
-      await this.getWeeklyReport(uid);
+      const report = await this.getWeeklyReport(uid);
       count += 1;
+      // Notify the user their report is ready (best-effort; never abort the batch).
+      try {
+        await notificationService.notify(uid, NotificationType.WEEKLY_ANALYTICS, {
+          weekStart: report.weekStart,
+          productivityScore: report.productivityScore,
+          problemsSolved: report.problemsSolved,
+        });
+      } catch (err) {
+        analyticsLog.warn({ err, userId: uid }, 'Failed to send weekly-analytics notification');
+      }
     }
     return count;
   }
@@ -371,11 +386,24 @@ export class AnalyticsService {
    */
   async recalculateStreaks(userId?: string): Promise<number> {
     const userIds = userId ? [userId] : await this.allUserIds();
+    const today = dayKey();
     let count = 0;
     for (const uid of userIds) {
       const streaks = await this.getStreaks(uid);
       await this.persistStreaks(uid, streaks);
       count += 1;
+      // Streak at risk: an active daily streak with no activity recorded today.
+      const atRisk =
+        streaks.currentDailyStreak > 0 && streaks.lastActiveDate !== today;
+      if (atRisk) {
+        try {
+          await notificationService.notify(uid, NotificationType.STREAK_WARNING, {
+            streakDays: streaks.currentDailyStreak,
+          });
+        } catch (err) {
+          analyticsLog.warn({ err, userId: uid }, 'Failed to send streak-warning notification');
+        }
+      }
     }
     return count;
   }
