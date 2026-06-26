@@ -1,0 +1,35 @@
+# Render Blueprint — runs the Kivo BullMQ worker on a persistent host.
+# Vercel (serverless) runs the HTTP API; it can ENQUEUE jobs to Upstash Redis but
+# cannot RUN the worker. This service drains those jobs and fires scheduled
+# reminders (revision reminders, habit/reflection/daily-goal/etc.) via FCM.
+#
+# Deploy: Render Dashboard → New → Blueprint → connect the kivo-backend repo →
+# it reads this file. Then set the secret env vars below (Environment tab).
+# Note: Render background workers require a paid instance (Starter ~$7/mo).
+# Free alternatives: Fly.io (free allowance) or Railway — same start command.
+services:
+  - type: worker
+    name: kivo-worker
+    runtime: node
+    region: singapore
+    plan: starter
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:worker
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Secrets — set these in the Render dashboard (same values as Vercel):
+      - key: REDIS_URL
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
