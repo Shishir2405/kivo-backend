@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────
+#  Local development stack: API + worker + Redis
+# ─────────────────────────────────────────────────────────────
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: kivo-redis
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kivo-api
+    command: ['node', 'dist/server.js']
+    env_file:
+      - .env
+    environment:
+      REDIS_HOST: redis
+    ports:
+      - '8080:8080'
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kivo-worker
+    command: ['node', 'dist/jobs/worker.js']
+    env_file:
+      - .env
+    environment:
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis-data:
