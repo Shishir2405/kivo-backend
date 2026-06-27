@@ -154,9 +154,74 @@ export abstract class BaseRepository<T extends BaseEntity> {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* In-memory query helpers.                                            */
+/* Let user-scoped reads avoid Firestore COMPOSITE INDEXES: we query   */
+/* only on the single `userId` equality (auto-indexed) and then refine */
+/* / sort / paginate in memory. Per-user collections are small.        */
+/* ------------------------------------------------------------------ */
+
+function matchesFilter(fieldVal: unknown, op: WhereFilterOp, value: unknown): boolean {
+  switch (op) {
+    case '==':
+      return fieldVal === value;
+    case '!=':
+      return fieldVal !== value;
+    case '>':
+      return (fieldVal as number) > (value as number);
+    case '>=':
+      return (fieldVal as number) >= (value as number);
+    case '<':
+      return (fieldVal as number) < (value as number);
+    case '<=':
+      return (fieldVal as number) <= (value as number);
+    case 'in':
+      return Array.isArray(value) && value.includes(fieldVal);
+    case 'not-in':
+      return Array.isArray(value) && !value.includes(fieldVal);
+    case 'array-contains':
+      return Array.isArray(fieldVal) && fieldVal.includes(value);
+    case 'array-contains-any':
+      return (
+        Array.isArray(fieldVal) && Array.isArray(value) && value.some((v) => fieldVal.includes(v))
+      );
+    default:
+      return true;
+  }
+}
+
+function applyFilters<T>(items: T[], filters: QueryFilter[]): T[] {
+  if (filters.length === 0) return items;
+  return items.filter((item) =>
+    filters.every((f) => matchesFilter((item as Record<string, unknown>)[f.field], f.op, f.value)),
+  );
+}
+
+function sortInMemory<T>(
+  items: T[],
+  orderBy: { field: string; direction?: 'asc' | 'desc' },
+): T[] {
+  const dir = orderBy.direction === 'desc' ? -1 : 1;
+  return [...items].sort((a, b) => {
+    const av = (a as Record<string, unknown>)[orderBy.field];
+    const bv = (b as Record<string, unknown>)[orderBy.field];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+}
+
 /**
- * Base repository for collections scoped to a single user. Adds `userId` filtering
- * to every query so a user can never read another user's data through the repo layer.
+ * Base repository for collections scoped to a single user.
+ *
+ * To avoid requiring a Firestore COMPOSITE INDEX for every
+ * `where(userId) + orderBy(...)` / multi-filter query, user-scoped reads query
+ * ONLY on the single `userId` equality (auto-indexed) and then apply extra
+ * filters, ordering and pagination IN MEMORY. Per-user data is small, so this
+ * is cheap and needs zero index provisioning.
  */
 export abstract class UserScopedRepository<
   T extends BaseEntity & { userId: string },
@@ -167,11 +232,14 @@ export abstract class UserScopedRepository<
     return entity;
   }
 
+  private allForUser(userId: string): Promise<T[]> {
+    return this.find({ filters: [{ field: 'userId', op: '==', value: userId }] });
+  }
+
   async listForUser(userId: string, options: FindOptions = {}): Promise<T[]> {
-    return this.find({
-      ...options,
-      filters: [{ field: 'userId', op: '==', value: userId }, ...(options.filters ?? [])],
-    });
+    const rows = applyFilters(await this.allForUser(userId), options.filters ?? []);
+    const ordered = options.orderBy ? sortInMemory(rows, options.orderBy) : rows;
+    return options.limit != null ? ordered.slice(0, options.limit) : ordered;
   }
 
   async paginateForUser(
@@ -179,9 +247,10 @@ export abstract class UserScopedRepository<
     pagination: PaginationParams,
     options: FindOptions = {},
   ): Promise<PaginatedResult<T>> {
-    return this.paginate(pagination, {
-      ...options,
-      filters: [{ field: 'userId', op: '==', value: userId }, ...(options.filters ?? [])],
-    });
+    const rows = applyFilters(await this.allForUser(userId), options.filters ?? []);
+    const ordered = options.orderBy ? sortInMemory(rows, options.orderBy) : rows;
+    const total = ordered.length;
+    const start = (pagination.page - 1) * pagination.limit;
+    return buildPaginatedResult(ordered.slice(start, start + pagination.limit), total, pagination);
   }
 }

@@ -209,34 +209,44 @@ export class DashboardService {
     userId: string,
     sinceIso: string,
   ): Promise<(StudySessionDoc & WithId)[]> {
+    // Single-field query (no composite index); range filtered in memory.
     const snap = await collection<StudySessionDoc>(Collections.STUDY_SESSIONS)
       .where('userId', '==', userId)
-      .where('startTime', '>=', sinceIso)
       .get();
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((s) => typeof s.startTime === 'string' && s.startTime >= sinceIso);
   }
 
   private async fetchProblemsSolvedSince(
     userId: string,
     sinceIso: string,
   ): Promise<(ProblemDoc & WithId)[]> {
+    // Single-field query (no composite index); status + range filtered in memory.
     const snap = await collection<ProblemDoc>(Collections.PROBLEMS)
       .where('userId', '==', userId)
-      .where('status', '==', ProblemStatus.COMPLETED)
-      .where('dateSolved', '>=', sinceIso)
       .get();
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter(
+        (p) =>
+          p.status === ProblemStatus.COMPLETED &&
+          typeof p.dateSolved === 'string' &&
+          p.dateSolved >= sinceIso,
+      );
   }
 
   private async fetchReflectionsSince(
     userId: string,
     sinceDayKey: string,
   ): Promise<(ReflectionDoc & WithId)[]> {
+    // Single-field query (no composite index); range filtered in memory.
     const snap = await collection<ReflectionDoc>(Collections.REFLECTIONS)
       .where('userId', '==', userId)
-      .where('dayKey', '>=', sinceDayKey)
       .get();
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((r) => typeof r.dayKey === 'string' && r.dayKey >= sinceDayKey);
   }
 
   private async fetchUser(userId: string): Promise<UserDoc | null> {
